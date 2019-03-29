@@ -11,7 +11,7 @@ from tensorboardX import SummaryWriter
 from torchvision.utils import save_image
 import os, time
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "2,3"
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 
 from myDataset import CreateDataLoader
 import models, util
@@ -19,11 +19,11 @@ import models, util
 parser = argparse.ArgumentParser(description='VAE MNIST Example')
 parser.add_argument('--batch-size', type=int, default=128, metavar='N',
                     help='input batch size for training (default: 128)')
-parser.add_argument('--epochs', type=int, default=50, metavar='N',
+parser.add_argument('--epochs', type=int, default=10, metavar='N',
                     help='number of epochs to train (default: 10)')
 parser.add_argument('--no-cuda', action='store_true', default=False,
                     help='enables CUDA training')
-parser.add_argument('--seed', type=int, default=1, metavar='S',
+parser.add_argument('--seed', type=int, default=2, metavar='S',
                     help='random seed (default: 1)')
 parser.add_argument('--log-interval', type=int, default=10, metavar='N',
                     help='how many batches to wait before logging training status')
@@ -41,7 +41,7 @@ parser.add_argument("-T", "--tb-directory",
 parser.add_argument("-z", "--z-size",
                     dest="zsize",
                     help="Size of latent space.",
-                    default=2048, type=int)
+                    default=4096, type=int)
 
 parser.add_argument("-d", "--vae-depth",
                     dest="vae_depth",
@@ -54,16 +54,6 @@ torch.manual_seed(args.seed)
 
 device = torch.device("cuda" if args.cuda else "cpu")
 
-'''
-kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
-train_loader = torch.utils.data.DataLoader(
-    datasets.MNIST('data', train=True, download=True,
-                   transform=transforms.ToTensor()),
-    batch_size=args.batch_size, shuffle=True, **kwargs)
-test_loader = torch.utils.data.DataLoader(
-    datasets.MNIST('data', train=False, transform=transforms.ToTensor()),
-    batch_size=args.batch_size, shuffle=True, **kwargs)
-'''
 train_path = "/data1/home/guangjie/Data/imagenet64/train_64x64.hdf5"
 test_path = "/data1/home/guangjie/Data/imagenet64/valid_64x64.hdf5"
 
@@ -71,22 +61,25 @@ train_loader, test_loader = CreateDataLoader(train_path, test_path)
 C, H, W = 1, 64, 64
 OUTCN = 64
 iterPerEpoch = len(train_loader)
-
-tbw = SummaryWriter(log_dir=args.tb_dir)
+print(iterPerEpoch)
+log_dir = './runs/vae_' + str(int(time.time()))
+tbw = SummaryWriter(log_dir=log_dir)
 global_idx = 0
 
 
 class VAE(nn.Module):
     def __init__(self):
         super(VAE, self).__init__()
-        # self.encoder = models.ImEncoder(in_size=(H, W), zsize=args.zsize, depth=args.vae_depth, colors=C)
+        self.vae_encoder = models.ImEncoder(in_size=(H, W), zsize=args.zsize, use_bn=False, depth=args.vae_depth,
+                                            colors=C)
         # todo self.vae_encoder 输出的隐变量是拼接在一起的！
-        # self.decoder = models.ImDecoder(in_size=(H, W), zsize=args.zsize, depth=args.vae_depth, out_channels=1)
-
-        self.eblock = util.Block(1, 16, 3)
-        self.flt = util.Flatten()
-        self.fc_mu = nn.Linear(4096 * 16, args.zsize)
-        self.fc_logvar = nn.Linear(4096 * 16, args.zsize)
+        self.decoder = models.ImDecoder(in_size=(H, W), zsize=args.zsize, use_bn=False, depth=args.vae_depth,
+                                        out_channels=1)
+        # self.pixcnn = models.LGated((C, H, W), OUTCN, 0, num_layers=arg.num_layers, k=krn, padding=pad)
+        # self.eblock = util.Block(1, 16, 3)
+        # self.flt = util.Flatten()
+        # self.fc_mu = nn.Linear(4096 * 16, args.zsize)
+        # self.fc_logvar = nn.Linear(4096 * 16, args.zsize)
 
         # self.efc1 = nn.Linear(4096, 8192)
         # self.efc2 = nn.Linear(8192, 8192)
@@ -96,21 +89,22 @@ class VAE(nn.Module):
         self.rsp = util.Reshape((16, 64, 64))
         self.dblock = util.Block(16, 32, deconv=True)
         # self.upsamp = nn.Upsample(scale_factor=2, mode='bilinear')
-        self.convTrsp = nn.ConvTranspose2d(32,1,1)
+        self.convTrsp = nn.ConvTranspose2d(32, 1, 1)
 
         # self.dfc1 = nn.Linear(args.zsize, 4096)
         # self.dfc2 = nn.Linear(4096, 8192)
         # self.dfc3 = nn.Linear(8192, 4096)
 
-    def vae_encoder(self, x):
-        e = self.eblock(x.view(-1, 1, 64, 64))  # 无pooling
-        e = self.flt(e)
-        mu = self.fc_mu(e)
-        logvar = self.fc_logvar(e)
-        return mu, logvar
-        # o = F.relu(self.efc1(x))
-        # o = F.relu(self.efc2(o))
-        # return self.efc31(o), self.efc32(o)
+    # def vae_encoder(self, x):
+    #     e = self.eblock(x.view(-1, 1, 64, 64))  # 无pooling
+    #     e = self.flt(e)
+    #     mu = self.fc_mu(e)
+    #     logvar = self.fc_logvar(e)
+    #     return mu, logvar
+
+    # o = F.relu(self.efc1(x))
+    # o = F.relu(self.efc2(o))
+    # return self.efc31(o), self.efc32(o)
 
     def vae_decoder(self, z):
         o = F.relu(self.dfc(z))
@@ -136,14 +130,17 @@ class VAE(nn.Module):
         # z = util.sample(mu, logvar)
         mu, logvar = self.vae_encoder(x.view(-1, 1, 64, 64))
         z = self.reparameterize(mu, logvar)
-        return self.vae_decoder(z), mu, logvar
-        # return self.decoder.forward(z), mu, logvar
+        # return self.vae_decoder(z), mu, logvar
+        return self.decoder(z), mu, logvar
         # mu, logvar = self.encode(x.view(-1, 4096))
         # z = self.reparameterize(mu, logvar)
         # return self.decode(z), mu, logvar
 
 
 model = VAE().to(device)
+load_model_path = "/data1/home/guangjie/Project/python/pixel-models/savedModels/cnn-vae-imagenet-1553764979-epoch50.pt"
+model.load_state_dict(torch.load(load_model_path))
+print('load model --- '+load_model_path)
 # model = nn.DataParallel(model)
 optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
@@ -171,7 +168,8 @@ def KLDLoss(mu, logvar):
 
 def train(epoch):
     model.train()
-    tbw_idx = epoch * iterPerEpoch
+    global global_idx
+    # tbw_idx = epoch * iterPerEpoch
     train_loss = 0
     for batch_idx, data in enumerate(train_loader):
         # data = data.view(-1, 1, 64, 64)
@@ -190,10 +188,12 @@ def train(epoch):
                 epoch, batch_idx * len(data), len(train_loader.dataset),
                        100. * batch_idx / len(train_loader),
                        loss.item() / len(data)))
-        tbw.add_scalar('cnn-vae-imagenet/train/bce_loss', bce_loss.item() / len(data),
-                       tbw_idx + batch_idx)
         tbw.add_scalar('cnn-vae-imagenet/train/kld_loss', kld_loss.item() / len(data),
-                       tbw_idx + batch_idx)
+                       global_idx)
+        tbw.add_scalar('cnn-vae-imagenet/train/bce_loss', bce_loss.item() / len(data),
+                       global_idx)
+
+        global_idx += 1
 
     print('====> Epoch: {} Average loss: {:.4f}'.format(
         epoch, train_loss / len(train_loader.dataset)))
@@ -228,9 +228,10 @@ if __name__ == "__main__":
         test(epoch)
         with torch.no_grad():
             sample = torch.randn(64, args.zsize).to(device)
-            sample = model.vae_decoder(sample).cpu()  # .forward
+            sample = model.decoder(sample).cpu()  # .forward vae_
             save_image(sample.view(64, 1, 64, 64),
                        'results/sample_' + str(epoch) + '.png')
-    torch.save(model.state_dict(), 'savedModels/cnn-vae-imagenet-' + str(int(time.time())) + '.pt')
+    save_path = 'savedModels/cnn-vae-imagenet-' + str(int(time.time())) + '.pt'
+    torch.save(model.state_dict(), save_path)
     tbw.close()
-    print('model saved!')
+    print('model saved --- ' + save_path)

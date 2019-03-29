@@ -126,8 +126,8 @@ class ImEncoder(nn.Module):
     """
     Encoder for a VAE
     """
-    def __init__(self, in_size, zsize=32, use_res=False, use_bn=False, depth=0, colors=3):
-        a, b, c = 16, 64, 128  # channel sizes
+    def __init__(self, in_size, zsize=2048, use_res=False, use_bn=False, depth=0, colors=3):
+        a, b, c = 16, 32, 64  # channel sizes
         p, q, r = 2, 2, 2  # up/downsampling
 
         super().__init__()
@@ -165,7 +165,7 @@ class ImDecoder(nn.Module):
     def __init__(self, in_size, zsize=32, use_res=False, use_bn=False, depth=0, out_channels=60):
         super().__init__()
 
-        a, b, c = 60, 64, 128  # channel sizes
+        a, b, c = 16, 32, 64  # channel sizes
         p, q, r = 2, 2, 2  # up/downsampling
 
         self.zsize = zsize

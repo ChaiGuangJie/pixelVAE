@@ -6,6 +6,7 @@ import os
 import myUtils
 import h5py
 
+
 def pil_loader(path):
     # open path as file to avoid ResourceWarning (https://github.com/python-pillow/Pillow/issues/835)
     with open(path, 'rb') as f:
@@ -36,16 +37,17 @@ class ImageNet64Dataset(Dataset):
     def __len__(self):
         return len(self.images)
 
+
 class ImageNet64DatasetH5(Dataset):
     def __init__(self, dir, transform, loader):
-        self.f = h5py.File(dir,'r')
+        self.f = h5py.File(dir, 'r')
         self.images = self.f['data']
         self.transform = transform
         # self.loader = loader
-        self.n_images = self.images.shape[0]//10
+        self.n_images = self.images.shape[0]
 
     def __getitem__(self, index):
-        image = self.images[index].reshape((64,64,1))
+        image = self.images[index].reshape((64, 64, 1))
         # image = self.loader(path)
         image = self.transform(image)
         return image
@@ -78,17 +80,39 @@ class ImageNet64DatasetLoadAll(Dataset):
         return len(self.images)
 
 
-
-def CreateDataLoader(train_dir,test_dir,batch_size=128,num_workers=10):
+def CreateDataLoader(train_dir, test_dir, batch_size=128, num_workers=10):
     transform = Compose([ToTensor()])
 
     train_data = ImageNet64DatasetH5(train_dir, transform, pil_loader)
-    train_loader = DataLoader(train_data, batch_size=batch_size, num_workers=num_workers)  # imagenet64_dataLoader(train_data, 128)
+    train_loader = DataLoader(train_data, batch_size=batch_size,
+                              num_workers=num_workers)  # imagenet64_dataLoader(train_data, 128)
 
     test_data = ImageNet64DatasetH5(test_dir, transform, pil_loader)
     test_loader = DataLoader(test_data, batch_size=batch_size, num_workers=num_workers)
 
-    return train_loader,test_loader
+    return train_loader, test_loader
+
+
+class Vim2DatesetAsGrey(Dataset):
+    def __init__(self, path, transform):
+        f = h5py.File(path, 'r')
+        self.st = f['st']
+        self.transform = transform
+        self.n_imgs = self.st.shape[0]
+
+    def __getitem__(self, item):
+        # print(item)
+        img = Image.fromarray(self.st[item].transpose((2, 1, 0))).convert('L').resize((64,64)) #todo resize (64,64)
+        return self.transform(img)
+
+    def __len__(self):
+        return self.n_imgs
+
+
+def CreateVim2StDataloader(path, batch_size=128, num_workers=10):
+    transform = Compose([ToTensor()])
+    st_dataset = Vim2DatesetAsGrey(path, transform)
+    return DataLoader(st_dataset, batch_size=batch_size, num_workers=num_workers)
 
 
 if __name__ == "__main__":
@@ -97,7 +121,7 @@ if __name__ == "__main__":
     train_dir = "/data1/home/guangjie/Data/imagenet64/train_64x64.hdf5"
     test_dir = "/data1/home/guangjie/Data/imagenet64/valid_64x64.hdf5"
 
-    train_loader,test_loader = CreateDataLoader(train_dir,test_dir)
+    train_loader, test_loader = CreateDataLoader(train_dir, test_dir)
 
     for idx, data in enumerate(test_loader):
         print(idx)
