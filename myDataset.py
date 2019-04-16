@@ -1,5 +1,5 @@
 import torch, torchvision
-from torchvision.transforms import ToTensor, Compose, Normalize
+from torchvision.transforms import ToTensor, Compose, Normalize, Pad
 from torch.utils.data import Dataset, DataLoader
 from PIL import Image
 import os
@@ -40,15 +40,16 @@ class ImageNet64Dataset(Dataset):
 
 
 class ImageNet64DatasetH5(Dataset):
-    def __init__(self, dir, transform, loader):
+    def __init__(self, dir, transform, loader=None, nc=1):
         self.f = h5py.File(dir, 'r')
         self.images = self.f['data']
         self.transform = transform
+        self.nc = nc
         # self.loader = loader
         self.n_images = self.images.shape[0]
 
     def __getitem__(self, index):
-        image = self.images[index].reshape((64, 64, 1))
+        image = self.images[index].reshape((64, 64, self.nc))
         # image = self.loader(path)
         image = self.transform(image)
         return image
@@ -81,8 +82,8 @@ class ImageNet64DatasetLoadAll(Dataset):
         return len(self.images)
 
 
-def CreateDataLoader(train_dir, test_dir, batch_size=128, num_workers=10):
-    transform = Compose([ToTensor()])
+def CreateDataLoader(train_dir, test_dir, batch_size=128, num_workers=4):
+    transform = Compose([ToTensor(), Normalize((0.5,), (0.5,))])
 
     train_data = ImageNet64DatasetH5(train_dir, transform, pil_loader)
     train_loader = DataLoader(train_data, batch_size=batch_size,
@@ -141,8 +142,9 @@ class MovingMNISTDataset(Dataset):
     def __init__(self, path, transform):
         self.mv_mnist = np.load(path)  # shape = (20,10000,64,64)
         self.transform = transform
-        self.shape_0 = self.mv_mnist.shape[0]
-        self.shape_1 = self.mv_mnist.shape[1]
+        self.data_shape = self.mv_mnist.shape
+        self.shape_0 = self.data_shape[0]  # self.mv_mnist.shape[0]
+        self.shape_1 = self.data_shape[1]  # self.mv_mnist.shape[1]
 
         self.n_imgs = self.shape_0 * self.shape_1
 
@@ -156,13 +158,76 @@ class MovingMNISTDataset(Dataset):
 
 
 def CreateMVMnistLoader(train_path, test_path, batch_size, num_workers=0):
-    transform = Compose([ToTensor(),Normalize((0,),(1,))])
+    transform = Compose([ToTensor()])  # Normalize((0,), (1,))
     mv_mnist_train = MovingMNISTDataset(train_path, transform)
     train_loader = DataLoader(mv_mnist_train, batch_size=batch_size, shuffle=True, num_workers=num_workers)
 
     mv_mnist_test = MovingMNISTDataset(test_path, transform)
-    test_loader = DataLoader(mv_mnist_test, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    test_loader = DataLoader(mv_mnist_test, batch_size=batch_size, shuffle=True, num_workers=num_workers)
     return train_loader, test_loader
+
+
+def CreateMVMnistAllLoader(path, batch_size=64, shuffle=False, num_workers=0):
+    transform = Compose([ToTensor(), Normalize((0,), (1,))])
+    mv_mnist_dataset = MovingMNISTDataset(path, transform)
+    mv_mnist_loader = DataLoader(mv_mnist_dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
+    return mv_mnist_loader
+
+
+class MvMnistHiddenDataset(Dataset):
+    def __init__(self, path):
+        self.f = h5py.File(path, 'r')
+        self.hidden_z = self.f['z']
+
+    def __getitem__(self, item):
+        # seq_array = self.hidden_z[:, item, :]
+        return torch.from_numpy(self.hidden_z[:, item, :])
+
+    def __len__(self):
+        return self.hidden_z.shape[1]
+
+
+def CreateMvMnistHiddenDataset(path, batch_size, shuffle=True, num_workers=0):
+    mv_mnist_hidden_dataset = MvMnistHiddenDataset(path)
+    return DataLoader(mv_mnist_hidden_dataset, shuffle=shuffle, batch_size=batch_size, num_workers=num_workers)
+
+
+class MvMnistHiddenDatasetSeq(Dataset):
+    def __init__(self, path, timeStep=20):
+        self.f = h5py.File(path, 'r')
+        self.hidden_z = self.f['z']
+        self.timeStep = timeStep
+        self.hidLen = self.hidden_z.shape[1] // 20
+
+    def __getitem__(self, item):
+        beginItem = item * self.timeStep
+        endItem = beginItem + self.timeStep
+        # seq_array = self.hidden_z[:, item, :]
+        return torch.from_numpy(self.hidden_z[:, beginItem:endItem, :])
+
+    def __len__(self):
+        return self.hidLen  # self.hidden_z.shape[1]//20
+
+
+def CreateMvMnistHiddenSeqLoader(path, batch_size, shuffle=True, num_workers=0):
+    mv_mnist_hidden_dataset = MvMnistHiddenDatasetSeq(path)
+    return DataLoader(mv_mnist_hidden_dataset, shuffle=shuffle, batch_size=batch_size, num_workers=num_workers)
+
+
+def CreateMnistDataloader(path, batch_size):
+    transform = Compose([Pad(padding=2), ToTensor()])
+
+    trainset = torchvision.datasets.MNIST(root=path, train=True,
+                                          download=False, transform=transform)
+    trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size,
+                                              shuffle=True, num_workers=2)
+
+    testset = torchvision.datasets.MNIST(root=path, train=False,
+                                         download=False, transform=transform)
+    testloader = torch.utils.data.DataLoader(testset, batch_size=batch_size,
+                                             shuffle=False, num_workers=2)
+
+    return trainloader, testloader
 
 
 if __name__ == "__main__":
@@ -186,14 +251,30 @@ if __name__ == "__main__":
     # # img_gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
     # cv2.imshow("img_gray", img)
 
-    mv_mnist = np.load("/data1/home/guangjie/Data/mnist_test_seq.npy")
-    print(mv_mnist.shape)  # shape = (20,1000,64,64)
+    # mv_mnist = np.load("/data1/home/guangjie/Data/mnist_test_seq.npy")
+    # print(mv_mnist.shape)  # shape = (20,1000,64,64)
 
-    train_mv_mnist = mv_mnist[:18, :, :, :]
-    test_mv_mnist = mv_mnist[18:, :, :, :]
 
-    np.save("/data1/home/guangjie/Data/MNIST/mnist_train_seq.npy", train_mv_mnist)
-    np.save("/data1/home/guangjie/Data/MNIST/mnist_test_seq.npy", test_mv_mnist)
+    # data_loader = CreateMVMnistAllLoader("/data1/home/guangjie/Data/MNIST/mv_mnist.hdf5",num_workers=4)
+    # save_f = h5py.File("/data1/home/guangjie/Data/MNIST/mv_mnist_round.hdf5",'w')
+    # data = save_f.create_dataset('data',shape=())
+    # for step,data in enumerate(data_loader):
+
+
+    # f = h5py.File("/data1/home/guangjie/Data/MNIST/mv_mnist.hdf5")  # "/data1/home/guangjie/Data/MNIST/mv_mnist_z.hdf5"
+    # dataset = f.create_dataset('mv_mnist', data=mv_mnist)
+    # f.close()
+
+    # all_idx = [i for i in range(mv_mnist.shape[1])]
+    # test_idx = all_idx[::10]
+    # train_idx = list(set(all_idx) - set(test_idx))
+    # train_mv_mnist = mv_mnist[:, train_idx, :, :]
+    # test_mv_mnist = mv_mnist[:, test_idx, :, :]
+    # print(train_mv_mnist.shape)
+    # print(test_mv_mnist.shape)
+    #
+    # np.save("/data1/home/guangjie/Data/MNIST/mnist_train_seq.npy", train_mv_mnist)
+    # np.save("/data1/home/guangjie/Data/MNIST/mnist_test_seq.npy", test_mv_mnist)
 
     # for i in range(3):
     #     # img = scipy.misc.toimage(mv_mnist[0, i, :, :])
