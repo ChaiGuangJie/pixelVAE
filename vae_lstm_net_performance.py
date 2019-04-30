@@ -106,5 +106,5 @@ for i, data in enumerate(data_loader):
         vis.images(torch.cat((origin, rec)).cpu() * 0.5 + 0.5, nrow=origin.shape[0], win=origin_rec_win,
                    opts={"title": "origin_rec"})
         text_win = vis.text(str(i),win=text_win)
-        time.sleep(0.2)
+        time.sleep(1)
     print(i)

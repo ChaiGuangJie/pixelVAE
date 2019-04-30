@@ -96,9 +96,13 @@ def CreateDataLoader(train_dir, test_dir, batch_size=128, num_workers=4):
 
 
 class Vim2DatesetAsGrey(Dataset):
-    def __init__(self, path, transform):
+    '''
+    将vim2 原始刺激图像数据集以64*64的灰色图像格式输出
+    '''
+
+    def __init__(self, path, data, transform):
         f = h5py.File(path, 'r')
-        self.st = f['st']
+        self.st = f[data]
         self.transform = transform
         self.n_imgs = self.st.shape[0]
 
@@ -111,31 +115,59 @@ class Vim2DatesetAsGrey(Dataset):
         return self.n_imgs
 
 
-def CreateVim2StDataloader(path, batch_size=128, num_workers=10):
-    transform = Compose([ToTensor()])
-    st_dataset = Vim2DatesetAsGrey(path, transform)
+class Vim2GrayDataset(Dataset):
+    '''
+    直接读取转换成 64*64 的灰色刺激图像数据集
+    '''
+
+    def __init__(self, path, data, transform):
+        f = h5py.File(path, 'r')
+        self.st = f[data]
+        self.transform = transform
+        self.n_imgs = self.st.shape[0]
+
+    def __getitem__(self, item):
+        return self.transform(self.st[item])
+
+    def __len__(self):
+        return self.n_imgs
+
+
+def CreateVim2StDataloader(path, transform=None, DatasetClass=Vim2DatesetAsGrey, data='st', batch_size=128,
+                           num_workers=8):
+    '''
+    返回vim2 dataloader（可直接用于mat格式）
+    :param path:
+    :param data: 'st' for train data or 'sv' for validate data
+    :param batch_size:
+    :param num_workers:
+    :return:
+    '''
+    if not transform:
+        transform = Compose([ToTensor()])
+    st_dataset = DatasetClass(path, data, transform)
     return DataLoader(st_dataset, batch_size=batch_size, num_workers=num_workers)
 
 
 class Vim2VaeHiddenDataset(Dataset):
-    def __init__(self, path, time_step):
+    def __init__(self, path, time_step, data):
         f = h5py.File(path, 'r')
-        self.mu_logvar = f['mu_logvar']  # shape=(108000, 8192)
+        self.z = f[data]  # shape=(108000, 8192)
         self.time_step = time_step
-        self.n_sample = int(self.mu_logvar.shape[0] / self.time_step)
+        self.n_sample = int(self.z.shape[1] / self.time_step)
 
     def __getitem__(self, item):
         begin = item * self.time_step
         end = begin + self.time_step
-        return torch.from_numpy(self.mu_logvar[begin:end, :])
+        return torch.from_numpy(self.z[:, begin:end, :])
 
     def __len__(self):
         return self.n_sample
 
 
-def CreateVim2HiddenLoader(path, time_step=15, batch_size=128, num_workers=1):
-    vim2hid_dateset = Vim2VaeHiddenDataset(path, time_step)
-    return DataLoader(vim2hid_dateset, batch_size=batch_size, num_workers=num_workers)
+def CreateVim2HiddenLoader(path, data='z', time_step=15, batch_size=64, shuffle=False, num_workers=4):
+    vim2hid_dateset = Vim2VaeHiddenDataset(path, time_step, data)
+    return DataLoader(vim2hid_dateset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
 
 
 class MovingMNISTDataset(Dataset):
@@ -187,7 +219,7 @@ class MvMnistHiddenDataset(Dataset):
         return self.hidden_z.shape[1]
 
 
-def CreateMvMnistHiddenDataset(path, batch_size, shuffle=True, num_workers=0):
+def CreateMvMnistHiddenDataset(path, batch_size, shuffle=False, num_workers=0):
     mv_mnist_hidden_dataset = MvMnistHiddenDataset(path)
     return DataLoader(mv_mnist_hidden_dataset, shuffle=shuffle, batch_size=batch_size, num_workers=num_workers)
 
@@ -209,7 +241,7 @@ class MvMnistHiddenDatasetSeq(Dataset):
         return self.hidLen  # self.hidden_z.shape[1]//20
 
 
-def CreateMvMnistHiddenSeqLoader(path, batch_size, shuffle=True, num_workers=0):
+def CreateMvMnistHiddenSeqLoader(path, batch_size, shuffle=False, num_workers=0):
     mv_mnist_hidden_dataset = MvMnistHiddenDatasetSeq(path)
     return DataLoader(mv_mnist_hidden_dataset, shuffle=shuffle, batch_size=batch_size, num_workers=num_workers)
 
@@ -228,6 +260,85 @@ def CreateMnistDataloader(path, batch_size):
                                              shuffle=False, num_workers=2)
 
     return trainloader, testloader
+
+
+class Flatten_MV_MNIST_Dataset():
+    def __init__(self, path, transform):
+        self.h5f = h5py.File(path, 'r')
+        self.mv_mnist = self.h5f['mv_mnist']  # shape = (200000, 64, 64), max = 255, min = 0
+        self.transform = transform
+        self.H = self.mv_mnist.shape[-2]
+        self.W = self.mv_mnist.shape[-1]
+
+    def __getitem__(self, item):
+        return self.transform(self.mv_mnist[item])  # .reshape(self.H, self.W, 1)
+
+    def __len__(self):
+        return self.mv_mnist.shape[0]
+
+
+def Create_Flatten_MV_MNIST_Loader(path, batch_size, num_workers):
+    transform = Compose([ToTensor()])
+    mv_dataset = Flatten_MV_MNIST_Dataset(path, transform)
+    return DataLoader(mv_dataset, batch_size=batch_size, num_workers=num_workers)
+
+
+class Vim2_fMRI_Dataset(Dataset):
+    def __init__(self, voxel_file, roi_idx, dt_key='rt'):
+        self.roi_idx = roi_idx
+        voxelf = h5py.File(voxel_file, 'r')
+        self.resp = voxelf[dt_key][self.roi_idx, :]
+        self.n_voxel = self.resp.shape[-1]
+
+    def __getitem__(self, item):
+        fmriItem = self.resp[:, item]
+        return np.nan_to_num(fmriItem)
+
+    def __len__(self):
+        return self.n_voxel
+
+
+def Create_Vim2_fmri_Dataloader(voxel_file, dt_key='rt', batch_size=64, shuffle=True, num_workers=8):
+    from vim2_trans import get_vim2_roi_idx
+    rois = ['v1rh', 'v1lh', 'v2rh', 'v2lh', 'v3rh', 'v3lh', 'v3arh', 'v3alh', 'v3brh', 'v3blh', 'v4rh', 'v4lh']
+    roi_idx = get_vim2_roi_idx(rois)
+    dataset = Vim2_fMRI_Dataset(voxel_file, roi_idx, dt_key=dt_key)
+    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
+
+
+class Vim2_z_fMRI_regression_Dataset(Dataset):
+    def __init__(self, voxel_file, z_file, roi_idx, train=True):
+        self.roi_idx = roi_idx
+        voxelf = h5py.File(voxel_file, 'r')
+        if train:
+            self.resp = voxelf['rt'][self.roi_idx, :]  # shape = (73728,7200)
+        else:
+            self.resp = voxelf['rv'][self.roi_idx, :]
+        self.n_voxel = self.resp.shape[-1]
+        zf = h5py.File(z_file, 'r')
+        self.z = zf['z']  # shape = (2,7200,1024)
+        self.n_z = self.z.shape[1]
+        # 此处不能用 with
+        assert self.n_voxel == self.n_z
+
+    def __getitem__(self, item):
+        fmriItem = self.resp[:, item]  # todo self.rt[self.roi_idx,item] 为什么不行？
+        zItem = self.z[:, item, :]
+        # nan to zero
+        return np.nan_to_num(fmriItem), zItem
+
+    def __len__(self):
+        return self.n_voxel
+
+
+def Create_vim2_fmri_z_loader(voxel_file="/data1/home/guangjie/Data/vim-2-gallant/orig/VoxelResponses_subject1.mat",
+                              z_file="/data1/home/guangjie/Data/vim-2-gallant/features/lstm_autoencoder_st_z_1024.hdf5",
+                              train=True, batch_size=64, shuffle=True, num_workers=8):
+    from vim2_trans import get_vim2_roi_idx
+    rois = ['v1rh', 'v1lh', 'v2rh', 'v2lh', 'v3rh', 'v3lh', 'v3arh', 'v3alh', 'v3brh', 'v3blh', 'v4rh', 'v4lh']
+    roi_idx = get_vim2_roi_idx(rois)
+    dataset = Vim2_z_fMRI_regression_Dataset(voxel_file=voxel_file, z_file=z_file, roi_idx=roi_idx, train=train)
+    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
 
 
 if __name__ == "__main__":
@@ -254,12 +365,10 @@ if __name__ == "__main__":
     # mv_mnist = np.load("/data1/home/guangjie/Data/mnist_test_seq.npy")
     # print(mv_mnist.shape)  # shape = (20,1000,64,64)
 
-
     # data_loader = CreateMVMnistAllLoader("/data1/home/guangjie/Data/MNIST/mv_mnist.hdf5",num_workers=4)
     # save_f = h5py.File("/data1/home/guangjie/Data/MNIST/mv_mnist_round.hdf5",'w')
     # data = save_f.create_dataset('data',shape=())
     # for step,data in enumerate(data_loader):
-
 
     # f = h5py.File("/data1/home/guangjie/Data/MNIST/mv_mnist.hdf5")  # "/data1/home/guangjie/Data/MNIST/mv_mnist_z.hdf5"
     # dataset = f.create_dataset('mv_mnist', data=mv_mnist)

@@ -14,16 +14,17 @@ import torch.utils.data
 import torchvision
 import torchvision.datasets as dset
 import torchvision.transforms as transforms
+
 import torchvision.utils as vutils
 import visdom, cv2
 from torch.autograd import Variable
-from myDataset import MovingMNISTDataset, ImageNet64DatasetH5
+from myDataset import MovingMNISTDataset, ImageNet64DatasetH5, Flatten_MV_MNIST_Dataset
 # from viewImages import showImg
 from tensorboardX import SummaryWriter
 from torch.nn import functional as F
 from torchvision.utils import save_image
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 
 vis = visdom.Visdom(server='http://172.18.29.70', env='vae_dcgan')
 assert vis.check_connection()
@@ -35,11 +36,11 @@ parser.add_argument('--workers', type=int, help='number of data loading workers'
 parser.add_argument('--batchSize', type=int, default=64, help='input batch size')
 parser.add_argument('--imageSize', type=int, default=64, help='the height / width of the input image to network')
 parser.add_argument('--nz', type=int, default=100, help='size of the latent z vector')
-parser.add_argument('--ngf', type=int, default=64)  # todo  64
-parser.add_argument('--ndf', type=int, default=64)
+parser.add_argument('--ngf', type=int, default=128)  # todo  64
+parser.add_argument('--ndf', type=int, default=96)  # todo 64
 parser.add_argument('--niter', type=int, default=24, help='number of epochs to train for')  # todo
-parser.add_argument('--saveInt', type=int, default=5, help='number of epochs between checkpoints')
-parser.add_argument('--lr', type=float, default=0.00006, help='learning rate, default=0.0002')
+parser.add_argument('--saveInt', type=int, default=3, help='number of epochs between checkpoints')
+parser.add_argument('--lr', type=float, default=0.00005, help='learning rate, default=0.0002')
 parser.add_argument('--beta1', type=float, default=0.5, help='beta1 for adam. default=0.5')
 parser.add_argument('--cuda', action='store_true', help='enables cuda')
 parser.add_argument('--ngpu', type=int, default=1, help='number of GPUs to use')
@@ -113,8 +114,18 @@ elif opt.dataset == 'mnist32':
                                          download=False, transform=transform)
 
 elif opt.dataset == 'mvmnist':
-    transform = transforms.Compose([transforms.ToTensor()])
-    dataset = MovingMNISTDataset(opt.dataroot, transform)
+
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+    ])
+    #        transforms.Normalize((0.,), (1.0,)),
+
+    # dataset = MovingMNISTDataset(opt.dataroot, transform)
+    # dataset = Flatten_MV_MNIST_Dataset("/data1/home/guangjie/Data/MNIST/mv_mnist_flatten.hdf5", transform)
+    dataset = MovingMNISTDataset("/data1/home/guangjie/Data/MNIST/mnist_train_seq.npy", transform)
+    test_dataset = MovingMNISTDataset("/data1/home/guangjie/Data/MNIST/mnist_test_seq.npy", transform)
+    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=opt.batchSize,
+                                              shuffle=True, num_workers=int(opt.workers))
 
 elif opt.dataset == "imagenet64":
     transform = transforms.Compose([
@@ -122,10 +133,13 @@ elif opt.dataset == "imagenet64":
         transforms.Normalize((0.5,), (0.5,))
     ])
     dataset = ImageNet64DatasetH5(opt.dataroot, transform)
-    #
+    test_dataset = ImageNet64DatasetH5("/data1/home/guangjie/Data/imagenet64/valid_64x64.hdf5", transform)
+    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=opt.batchSize,
+                                              shuffle=True, num_workers=int(opt.workers))
 
 else:
     dataset = None
+    test_loader = None
 
 assert dataset
 dataloader = torch.utils.data.DataLoader(dataset, batch_size=opt.batchSize,
@@ -307,8 +321,8 @@ if opt.netD != '':
     print("load netD")
 print(netD)
 
-criterion = nn.BCELoss(weight=torch.full((opt.batchSize, 1), 10), reduction="sum")  #
-MSECriterion = nn.MSELoss(reduction="sum")  # reduction="sum"   # todo sum是关键！！！！！，不然重建的mnist图像训练不出来
+criterion = nn.BCELoss(reduction="sum")  # todo mean ,  weight=torch.full((opt.batchSize, 1), 10)
+MSECriterion = nn.MSELoss(reduction="sum")  # todo "mean"   # todo sum是关键！！！！！，不然重建的mnist图像训练不出来 reduction="sum"
 # BCECriterion = nn.BCELoss()
 # def BCELoss(recon_x, x):
 #     return F.binary_cross_entropy(recon_x, x)
@@ -348,9 +362,22 @@ VAE_KLD_win = vis.line(torch.tensor([0]), torch.tensor([0]), name="VAEerr_win", 
 errD_win = vis.line(torch.tensor([0]), torch.tensor([0]), name="errD_win", opts={"title": "errD"})
 errG_win = vis.line(torch.tensor([0]), torch.tensor([0]), name="errG_win", opts={"title": "errG"})
 
+############# test vis win ##################
+test_origin_rec_win = vis.images(torch.zeros(16, 1, 64, 64, dtype=torch.float).cpu(),
+                                 opts={"title": "test origin rec images"})
+
+test_VAE_MSE_win = vis.line(torch.tensor([0]), torch.tensor([0]), name="test_VAE_MSE_win",
+                            opts={"title": "test VAE_MSE_win"})
+test_VAE_KLD_win = vis.line(torch.tensor([0]), torch.tensor([0]), name="test_VAE_KLD_win",
+                            opts={"title": "test VAE_KLD_win"})
+
+test_errD_win = vis.line(torch.tensor([0]), torch.tensor([0]), name="test_errD_win", opts={"title": "test errD"})
+test_errG_win = vis.line(torch.tensor([0]), torch.tensor([0]), name="test_errG_win", opts={"title": "test errG"})
+
 text_win = vis.text('start')
 
 global_step = torch.tensor([0])
+test_global_step = torch.tensor([0])
 
 for epoch in range(opt.niter):
     for i, data in enumerate(dataloader, 0):
@@ -423,7 +450,7 @@ for epoch in range(opt.niter):
         MSEerr = MSECriterion(rec, input)  # MSECriterion(rec, input)
         VAEerr = KLD + MSEerr  # kld * 7
         ######################################
-        VAEerr = VAEerr
+        # VAEerr = VAEerr
         ######################################
         VAEerr.backward()
         optimizerG.step()  # todo 暂时不更新
@@ -446,7 +473,7 @@ for epoch in range(opt.niter):
 
         rec, _ = netG(input)  # this tensor is freed from mem at this point
         output = netD(rec)
-        errG = criterion(output, label) * 50  # * 30
+        errG = criterion(output, label)  # * 50  # * 30 #todo
         D_G_z2 = output.data.mean()
         ######################################
         errG.backward()
@@ -463,7 +490,7 @@ for epoch in range(opt.niter):
             print('[%d/%d][%d/%d]' % (epoch, opt.niter, i, len(dataloader)))
             vis.text('[%d/%d][%d/%d]' % (epoch, opt.niter, i, len(dataloader)), win=text_win,
                      opts={"title": "current epoch/batch"})
-        if i % 10 * opt.nlog == 0:
+        if i % (30 * opt.nlog) == 0:
             comparison = torch.cat([input.view(input.shape[0], 1, opt.imageSize, opt.imageSize)[-n:],
                                     rec.view(rec.shape[0], 1, opt.imageSize, opt.imageSize)[-n:]])
             save_image(comparison.cpu(),
@@ -474,6 +501,39 @@ for epoch in range(opt.niter):
         # if i % 10 == 0:
         #     global_step += 10
         #     origin_rec_win = vis.images(torch.cat((input[:n], rec[:n])).cpu() * 0.5 + 0.5, win=origin_rec_win)
+    if test_loader:
+        with torch.no_grad():
+            for j, testData in enumerate(test_loader):
+                # todo global
+                test_global_step += 1
+                input = testData.to(device)
+
+                label = torch.full((input.shape[0], 1), real_label).to(device)  # .cuda()  #
+                output = netD(input)
+                errD_real = criterion(output, label)
+
+                noise = torch.empty((input.shape[0], nz, 1, 1)).normal_().to(device)  # .cuda()  #
+                gen = netG.decoder(noise)
+                label.data.fill_(fake_label)
+                output = netD(gen.detach())
+                errD_fake = criterion(output, label)
+                errD = errD_real + errD_fake
+                vis.line(Y=errD.view(1), X=test_global_step, win=test_errD_win, update="append",
+                         opts={"title": "errD_win"})
+
+                rec, mu_logvar = netG(input)
+                KLD = KLDLoss(mu_logvar[0], mu_logvar[1])  # / 2  # / 10
+                MSEerr = MSECriterion(rec, input)  # MSECriterion(rec, input)
+                VAEerr = KLD + MSEerr  # kld * 7
+
+                vis.line(Y=MSEerr.view(1), X=test_global_step, win=test_VAE_MSE_win, update="append",
+                         opts={"title": "test_VAE_MSEerr_win"})
+                vis.line(Y=KLD.view(1), X=test_global_step, win=test_VAE_KLD_win, update="append",
+                         opts={"title": "test_VAE_KLDerr_win"})
+                # rec_win = vis.images(rec[:n].cpu() * 0.5 + 0.5, win=rec_win)  # gen torch.Size([64, 1, 64, 64])
+                test_origin_rec_win = vis.images(torch.cat((input[:n], rec[:n])).cpu() * 0.5 + 0.5,
+                                                 win=test_origin_rec_win,
+                                                 opts={"title": "test_origin_rec"})
 
     if (epoch + 1) % opt.saveInt == 0:  # and epoch != 0
         torch.save(netG.state_dict(),

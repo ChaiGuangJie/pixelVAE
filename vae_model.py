@@ -10,8 +10,6 @@ from torch.autograd import Variable
 import math
 
 
-
-
 class VAE(nn.Module):
     def __init__(self, H, W, zsize, depth=0, colors=1, out_channels=1):
         super().__init__()
@@ -87,7 +85,7 @@ class _Sampler(nn.Module):
         logvar = mu_logvar[1]
 
         std = logvar.mul(0.5).exp_()  # calculate the STDEV
-        if cuda:                                                    #todo changed
+        if cuda:  # todo changed
             eps = torch.cuda.FloatTensor(std.size()).normal_()  # random normalized noise
         else:
             eps = torch.FloatTensor(std.size()).normal_()  # random normalized noise
@@ -131,7 +129,7 @@ class _netG(nn.Module):
     def __init__(self, imageSize, ngpu, ngf, nz, nc):
         super(_netG, self).__init__()
         self.ngpu = ngpu
-        self.encoder = _Encoder(imageSize, ngf, nz, nc) #todo changed
+        self.encoder = _Encoder(imageSize, ngf, nz, nc)  # todo changed
         self.sampler = _Sampler()
 
         n = math.log2(imageSize)
@@ -207,6 +205,53 @@ class _netD(nn.Module):
             output = self.main(input)
 
         return output.view(-1, 1)
+
+
+class RNNAutoEncoder(nn.Module):
+    def __init__(self, encoder_input_size, decoder_input_size, hidden_size, z_size, batch_size, time_step, device):
+        super().__init__()
+
+        self.encoder_input_size = encoder_input_size
+        self.decoder_input_size = decoder_input_size
+        self.hidden_size = hidden_size
+        self.z_size = z_size
+        self.batch_size = batch_size
+        self.time_step = time_step
+        self.device = device
+
+        self.encoder_cell = nn.LSTMCell(self.encoder_input_size, self.hidden_size)
+        self.decoder_cell = nn.LSTMCell(self.decoder_input_size, self.hidden_size)
+        self.z = nn.Linear(self.hidden_size, self.z_size)
+
+        # self.mu = nn.Linear(HIDDEN_SIZE, MU_SIZE)
+        # self.logvar = nn.Linear(HIDDEN_SIZE, LOGVAR_SIZE)
+
+    def forward(self, x):
+        hx, cx = torch.full((self.batch_size, self.hidden_size), 0.1), torch.full((self.batch_size, self.hidden_size), 0.1)
+        for i in range(self.time_step):
+            if i == 0:
+                hx, cx = self.encoder_cell(x[:, i, :])  # todo 第一帧时就给hx,cx
+            else:
+                hx, cx = self.encoder_cell(x[:, i, :], (hx, cx))  # todo hx,cx 应该只有第一帧为空【不只是12帧的第一帧】，后面都用上一次的值
+            # out.append(hx)
+        output = []
+        # output_seq = torch.empty((TIME_STEP, BATCH_SIZE, HIDDEN_SIZE), requires_grad=True).to(device)
+        for i in range(self.time_step):
+            if i == 0:
+                hx, cx = self.decoder_cell(torch.full(hx.shape, 0.1).to(self.device), (hx, cx))
+            else:
+                hx, cx = self.decoder_cell(hx, (hx, cx))  # todo 这里的输入应该是什么？
+            # mu = torch.tanh(self.mu(hx))
+            # logvar = torch.tanh(self.logvar(hx))
+            z = torch.tanh(self.z(hx))
+            # mu = F.softmax(self.mu(hx), dim=1)  # F.log_softmax(self.mu(hx), dim=1)  #
+            # logvar = F.softmax(self.logvar(hx), dim=1)  # F.log_softmax(self.logvar(hx), dim=1)  #
+            # output_seq[i] = torch.cat((mu, logvar), 1)
+            output.append(z)
+            # output.append(torch.cat((mu, logvar), 1))
+        # return output_seq.permute(1, 0, 2)
+        return torch.stack(output).permute(1, 0, 2)  # shape = (16,20,2048) BATCH_SIZE,TIME_STEP,HIDDEN_SIZE
+        # [::-1]
 
 
 if __name__ == "__main__":
