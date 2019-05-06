@@ -125,8 +125,16 @@ class Vim2GrayDataset(Dataset):
         self.st = f[data]
         self.transform = transform
         self.n_imgs = self.st.shape[0]
+        ######测试多workers加载数据的时候乱序######
+        self.test = -1
+        ############
 
     def __getitem__(self, item):
+        #############测试多workers加载数据的时候乱序#######################
+        # print(item)
+        assert item >= self.test
+        self.test = item
+        ###################################
         return self.transform(self.st[item])
 
     def __len__(self):
@@ -165,7 +173,7 @@ class Vim2VaeHiddenDataset(Dataset):
         return self.n_sample
 
 
-def CreateVim2HiddenLoader(path, data='z', time_step=15, batch_size=64, shuffle=False, num_workers=4):
+def CreateVim2HiddenLoader(path, data='z', time_step=15, batch_size=64, shuffle=False, num_workers=0):
     vim2hid_dateset = Vim2VaeHiddenDataset(path, time_step, data)
     return DataLoader(vim2hid_dateset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
 
@@ -284,46 +292,68 @@ def Create_Flatten_MV_MNIST_Loader(path, batch_size, num_workers):
 
 
 class Vim2_fMRI_Dataset(Dataset):
-    def __init__(self, voxel_file, roi_idx, dt_key='rt'):
+    def __init__(self, voxel_file, roi_idx, mean, std, dt_key='rt'):
         self.roi_idx = roi_idx
         voxelf = h5py.File(voxel_file, 'r')
-        self.resp = voxelf[dt_key][self.roi_idx, :]
+        if dt_key == 'rva':
+            self.resp = voxelf[dt_key][self.roi_idx, 0, :]
+        else:
+            self.resp = voxelf[dt_key][self.roi_idx, :]
         self.n_voxel = self.resp.shape[-1]
+        self.mean = mean
+        self.std = std
 
     def __getitem__(self, item):
         fmriItem = self.resp[:, item]
-        return np.nan_to_num(fmriItem)
+        fmriItem = np.nan_to_num(fmriItem)
+        # mean = np.mean(fmriItem)
+        # std = np.std(fmriItem)
+        # fmriItem = (fmriItem - mean) / std  # todo 测试数据应该用训练数据的mean和std
+        fmriItem = (fmriItem - self.mean) / self.std
+        return fmriItem
 
     def __len__(self):
         return self.n_voxel
+
+
+def get_vim2_fmri_mean_std(voxel_train_file, roi_idx, dt_key):
+    with h5py.File(voxel_train_file, 'r') as vf:
+        rt = vf[dt_key][roi_idx, :].flatten()  # todo 需要test数据的mean，std
+        rt = np.nan_to_num(rt)
+        mean = np.mean(rt)
+        std = np.std(rt)
+    return mean, std
 
 
 def Create_Vim2_fmri_Dataloader(voxel_file, dt_key='rt', batch_size=64, shuffle=True, num_workers=8):
     from vim2_trans import get_vim2_roi_idx
     rois = ['v1rh', 'v1lh', 'v2rh', 'v2lh', 'v3rh', 'v3lh', 'v3arh', 'v3alh', 'v3brh', 'v3blh', 'v4rh', 'v4lh']
     roi_idx = get_vim2_roi_idx(rois)
-    dataset = Vim2_fMRI_Dataset(voxel_file, roi_idx, dt_key=dt_key)
+    mean, std = get_vim2_fmri_mean_std(voxel_file, roi_idx, dt_key)
+    dataset = Vim2_fMRI_Dataset(voxel_file, roi_idx, dt_key=dt_key, mean=mean, std=std)
     return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
 
 
 class Vim2_z_fMRI_regression_Dataset(Dataset):
-    def __init__(self, voxel_file, z_file, roi_idx, train=True):
+    def __init__(self, voxel_file, z_file, roi_idx, dt_key='rt'):
         self.roi_idx = roi_idx
         voxelf = h5py.File(voxel_file, 'r')
-        if train:
-            self.resp = voxelf['rt'][self.roi_idx, :]  # shape = (73728,7200)
-        else:
-            self.resp = voxelf['rv'][self.roi_idx, :]
+        self.resp = voxelf[dt_key][self.roi_idx, :]  # shape = (73728,7200)
         self.n_voxel = self.resp.shape[-1]
         zf = h5py.File(z_file, 'r')
         self.z = zf['z']  # shape = (2,7200,1024)
-        self.n_z = self.z.shape[1]
+        self.n_z = self.z.shape[-2]
         # 此处不能用 with
         assert self.n_voxel == self.n_z
 
     def __getitem__(self, item):
         fmriItem = self.resp[:, item]  # todo self.rt[self.roi_idx,item] 为什么不行？
-        zItem = self.z[:, item, :]
+        if len(self.z.shape) == 3:
+            zItem = self.z[:, item, :]
+        elif len(self.z.shape) == 2:
+            zItem = self.z[item, :]
+        else:
+            zItem = self.z[item]
         # nan to zero
         return np.nan_to_num(fmriItem), zItem
 
@@ -331,14 +361,100 @@ class Vim2_z_fMRI_regression_Dataset(Dataset):
         return self.n_voxel
 
 
-def Create_vim2_fmri_z_loader(voxel_file="/data1/home/guangjie/Data/vim-2-gallant/orig/VoxelResponses_subject1.mat",
-                              z_file="/data1/home/guangjie/Data/vim-2-gallant/features/lstm_autoencoder_st_z_1024.hdf5",
-                              train=True, batch_size=64, shuffle=True, num_workers=8):
+class Sampled_z_and_fmri_Dataset(Dataset):
+    def __init__(self, voxel_file, z_file, roi_idx, mean, std, dt_key='rt', seq_index=0, time_step=15):
+        self.roi_idx = roi_idx
+        voxelf = h5py.File(voxel_file, 'r')
+        self.resp = voxelf[dt_key][self.roi_idx, :]  # shape = (73728,7200)
+        self.n_voxel = self.resp.shape[-1]
+        zf = h5py.File(z_file, 'r')
+        self.z = zf['z']  # shape =(108000,512)
+        self.n_z = self.z.shape[-2]
+        self.seq_index = seq_index
+        self.time_step = time_step
+        self.mean = mean
+        self.std = std
+
+    def __getitem__(self, item):
+        fmriItem = self.resp[:, item]
+        fmriItem = np.nan_to_num(fmriItem)
+
+        # mean = np.mean(fmriItem)
+        # std = np.std(fmriItem)
+        # fmriItem = (fmriItem - mean) / std
+        fmriItem = (fmriItem - self.mean) / self.std
+
+        zItem = self.z[item * self.time_step + self.seq_index, :]  # todo transforms
+        return fmriItem, zItem
+
+    def __len__(self):
+        return self.n_voxel
+
+
+def Create_vim2_fmri_z_loader(voxel_file, z_file, dt_key, seq_index=0, batch_size=64, shuffle=True,
+                              num_workers=8):
     from vim2_trans import get_vim2_roi_idx
     rois = ['v1rh', 'v1lh', 'v2rh', 'v2lh', 'v3rh', 'v3lh', 'v3arh', 'v3alh', 'v3brh', 'v3blh', 'v4rh', 'v4lh']
     roi_idx = get_vim2_roi_idx(rois)
-    dataset = Vim2_z_fMRI_regression_Dataset(voxel_file=voxel_file, z_file=z_file, roi_idx=roi_idx, train=train)
+    # transform = Compose([Normalize((0.5,), (0.5,))])  # 没有归一化 输出值会很大
+    mean, std = get_vim2_fmri_mean_std(voxel_file, roi_idx, dt_key=dt_key)
+    dataset = Sampled_z_and_fmri_Dataset(voxel_file=voxel_file, z_file=z_file, roi_idx=roi_idx, mean=mean, std=std,
+                                         dt_key=dt_key, seq_index=seq_index)
     return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
+
+
+class lstm_z_dataset(Dataset):
+    def __init__(self, file, transform):
+        self.zf = h5py.File(file, 'r')
+        self.z = self.zf['z']
+        self.transform = transform
+        self.n_z = self.z.shape[1]
+
+    def __getitem__(self, item):
+        return self.transform(self.z[:, item, :])  # to tensor ?
+
+    def __len__(self):
+        return self.n_z
+
+
+class sampled_z_dataset(Dataset):
+    def __init__(self, file, transform):
+        self.zf = h5py.File(file, 'r')
+        self.z = self.zf['z']
+        self.transform = transform
+        self.n_z = self.z.shape[0]
+
+    def __getitem__(self, item):
+        return self.transform(self.z[item, :])  # to tensor ?
+
+    def __len__(self):
+        return self.n_z
+
+
+def Create_sampled_z_dataloader(file, batch_size=64, shuffle=False, num_workers=1):
+    dataset = sampled_z_dataset(file, torch.from_numpy)
+    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
+
+
+def Create_lstm_z_dataloader(file, batch_size=64, shuffle=False, num_workers=6):
+    dataset = lstm_z_dataset(file, torch.from_numpy)
+    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
+
+
+def extract_first_frame_of_z(ori_file, save_file, time_step=15):
+    with h5py.File(ori_file, 'r') as orif:
+        ori_z = orif['z']
+        with h5py.File(save_file, 'w') as sf:
+            sf.create_dataset('z', data=ori_z[:, ::time_step, :])
+
+
+def extract_first_frame_of_stimuli(ori_file, save_file, time_step=15):
+    with h5py.File(ori_file, 'r') as orif:
+        ori_st = orif['st']
+        ori_sv = orif['sv']
+        with h5py.File(save_file, 'w') as sf:
+            sf.create_dataset('st', data=ori_st[::time_step, :, :])
+            sf.create_dataset('sv', data=ori_sv[::time_step, :, :])
 
 
 if __name__ == "__main__":
@@ -375,7 +491,7 @@ if __name__ == "__main__":
     # f.close()
 
     # all_idx = [i for i in range(mv_mnist.shape[1])]
-    # test_idx = all_idx[::10]
+    # test_idx = all_idx[::15]
     # train_idx = list(set(all_idx) - set(test_idx))
     # train_mv_mnist = mv_mnist[:, train_idx, :, :]
     # test_mv_mnist = mv_mnist[:, test_idx, :, :]
@@ -392,4 +508,9 @@ if __name__ == "__main__":
     #     img = Image.fromarray(mv_mnist[0, i, :, :])
     #     img.show(img, 'test')
     #     print(i)
+    # extract_first_frame_of_z("/data1/home/guangjie/Data/vim-2-gallant/features/vae_gan_sv_z_512.hdf5",
+    #                          save_file="/data1/home/guangjie/Data/vim-2-gallant/features/vae_gan_sv_z_512_first_frame.hdf5")
+    extract_first_frame_of_stimuli(ori_file="/data1/home/guangjie/Data/vim-2-gallant/features/Stimuli.hdf5",
+                                   save_file="/data1/home/guangjie/Data/vim-2-gallant/features/Stimuli_first_frame.hdf5")
+
     print('ok')

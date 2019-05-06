@@ -24,9 +24,9 @@ from tensorboardX import SummaryWriter
 from torch.nn import functional as F
 from torchvision.utils import save_image
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
-vis = visdom.Visdom(server='http://172.18.29.70', env='vae_dcgan')
+vis = visdom.Visdom(server='http://172.18.29.70', env='mv_mnist_vae_dcgan')
 assert vis.check_connection()
 
 parser = argparse.ArgumentParser()
@@ -36,11 +36,11 @@ parser.add_argument('--workers', type=int, help='number of data loading workers'
 parser.add_argument('--batchSize', type=int, default=64, help='input batch size')
 parser.add_argument('--imageSize', type=int, default=64, help='the height / width of the input image to network')
 parser.add_argument('--nz', type=int, default=100, help='size of the latent z vector')
-parser.add_argument('--ngf', type=int, default=128)  # todo  64
-parser.add_argument('--ndf', type=int, default=96)  # todo 64
+parser.add_argument('--ngf', type=int, default=32)  # todo  64
+parser.add_argument('--ndf', type=int, default=32)  # todo 64
 parser.add_argument('--niter', type=int, default=24, help='number of epochs to train for')  # todo
 parser.add_argument('--saveInt', type=int, default=3, help='number of epochs between checkpoints')
-parser.add_argument('--lr', type=float, default=0.00005, help='learning rate, default=0.0002')
+parser.add_argument('--lr', type=float, default=0.001, help='learning rate, default=0.0002')
 parser.add_argument('--beta1', type=float, default=0.5, help='beta1 for adam. default=0.5')
 parser.add_argument('--cuda', action='store_true', help='enables cuda')
 parser.add_argument('--ngpu', type=int, default=1, help='number of GPUs to use')
@@ -132,7 +132,7 @@ elif opt.dataset == "imagenet64":
         transforms.ToTensor(),
         transforms.Normalize((0.5,), (0.5,))
     ])
-    dataset = ImageNet64DatasetH5(opt.dataroot, transform)
+    dataset = ImageNet64DatasetH5(opt.dataroot, transform) #(-1, 1)
     test_dataset = ImageNet64DatasetH5("/data1/home/guangjie/Data/imagenet64/valid_64x64.hdf5", transform)
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=opt.batchSize,
                                               shuffle=True, num_workers=int(opt.workers))

@@ -8,20 +8,20 @@ from vae_model import _netG
 import numpy as np
 import visdom
 import torchvision.transforms as transforms
-from lstm_autoencoder_model import RNN_Autoencoder
+from lstm_autoencoder_model import LSTM_Autoencoder, GRU_Autoencoder
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 device = torch.device("cuda")
 
 # Hyper Parameters
-EPOCH = 80  # 50 train the training data n times, to save time, we just train 1 epoch
+EPOCH = 60  # 50 train the training data n times, to save time, we just train 1 epoch
 BATCH_SIZE = 64
 TIME_STEP = 15  # rnn time step #/ image height
 ENCODER_INPUT_SIZE = 512  # rnn input size #/ image width
-DECODER_INPUT_SIZE = 1024
+DECODER_INPUT_SIZE = 720
 HIDDEN_SIZE = DECODER_INPUT_SIZE
 Z_SIZE = 512
-LR = 0.0005  # learning rate
+LR = 0.0001  # learning rate
 MU_SIZE = 512
 LOGVAR_SIZE = 512
 
@@ -29,59 +29,22 @@ torch.manual_seed(2)
 
 # log_dir = './runs/lstm_' + str(int(time.time()))
 # tbw = SummaryWriter(log_dir=log_dir)
-vis = visdom.Visdom(server='http://172.18.29.70', env='lstm_autoencoder')
+vis = visdom.Visdom(server='http://172.18.29.70', env='rnn_autoencoder')
 assert vis.check_connection()
 
 origin_rec_win = vis.images(torch.zeros(16, 1, 64, 64, dtype=torch.float).cpu(), opts={"title": "origin rec images"})
-lstm_loss_win = vis.line(torch.tensor([0]), torch.tensor([0]), name="lstm_loss_win", opts={"title": "lstm_loss_win"})
+lstm_loss_win = vis.line(torch.tensor([0]), torch.tensor([0]), name="RNN_loss_win", opts={"title": "RNN_loss_win"})
 
 test_origin_rec_win = vis.images(torch.zeros(16, 1, 64, 64, dtype=torch.float).cpu(),
                                  opts={"title": "test origin rec images"})
-test_lstm_loss_win = vis.line(torch.tensor([0]), torch.tensor([0]), name="test lstm_loss_win",
-                              opts={"title": "test lstm_loss_win"})
+test_lstm_loss_win = vis.line(torch.tensor([0]), torch.tensor([0]), name="test RNN_loss_win",
+                              opts={"title": "test RNN_loss_win"})
 
-
-class RNN(nn.Module):
-    def __init__(self):
-        super().__init__()
-
-        self.encoder_cell = nn.LSTMCell(ENCODER_INPUT_SIZE, HIDDEN_SIZE)
-        self.decoder_cell = nn.LSTMCell(DECODER_INPUT_SIZE, HIDDEN_SIZE)
-        self.z = nn.Linear(HIDDEN_SIZE, Z_SIZE)
-        # self.mu = nn.Linear(HIDDEN_SIZE, MU_SIZE)
-        # self.logvar = nn.Linear(HIDDEN_SIZE, LOGVAR_SIZE)
-
-    def forward(self, x):
-        hx, cx = torch.full((x.shape[0], HIDDEN_SIZE), 0.1).to(device), torch.full((x.shape[0], HIDDEN_SIZE), 0.1).to(
-            device)
-        for i in range(TIME_STEP):
-            if i == 0:
-                hx, cx = self.encoder_cell(x[:, i, :], (hx, cx))  # todo 第一帧时就给hx,cx
-            else:
-                hx, cx = self.encoder_cell(x[:, i, :], (hx, cx))  # todo hx,cx 应该只有第一帧为空【不只是12帧的第一帧】，后面都用上一次的值
-            # out.append(hx)
-        output = []
-        # output_seq = torch.empty((TIME_STEP, BATCH_SIZE, HIDDEN_SIZE), requires_grad=True).to(device)
-        for i in range(TIME_STEP):
-            if i == 0:
-                hx, cx = self.decoder_cell(torch.full(hx.shape, 0.1).to(device), (hx, cx))
-            else:
-                hx, cx = self.decoder_cell(hx, (hx, cx))  # todo 这里的输入应该是什么？
-            # mu = torch.tanh(self.mu(hx))
-            # logvar = torch.tanh(self.logvar(hx))
-            z = torch.tanh(self.z(hx))
-            # mu = F.softmax(self.mu(hx), dim=1)  # F.log_softmax(self.mu(hx), dim=1)  #
-            # logvar = F.softmax(self.logvar(hx), dim=1)  # F.log_softmax(self.logvar(hx), dim=1)  #
-            # output_seq[i] = torch.cat((mu, logvar), 1)
-            output.append(z)
-            # output.append(torch.cat((mu, logvar), 1))
-        # return output_seq.permute(1, 0, 2)
-        return torch.stack(output).permute(1, 0, 2)  # shape = (16,20,2048) BATCH_SIZE,TIME_STEP,HIDDEN_SIZE
-        # [::-1]
-
-
-mu_rnn = RNN_Autoencoder(ENCODER_INPUT_SIZE, DECODER_INPUT_SIZE, HIDDEN_SIZE, Z_SIZE, TIME_STEP).to(
-    device)  # RNN().to(device)
+# mu_rnn = LSTM_Autoencoder(ENCODER_INPUT_SIZE, DECODER_INPUT_SIZE, HIDDEN_SIZE, TIME_STEP).to(
+#     device)
+mu_rnn = GRU_Autoencoder(ENCODER_INPUT_SIZE, DECODER_INPUT_SIZE, HIDDEN_SIZE, TIME_STEP).to(
+    device)
+# RNN().to(device)
 # logvar_rnn = RNN().to(device)
 # rnn = nn.DataParallel(rnn)
 print(mu_rnn)
@@ -93,10 +56,18 @@ print(mu_rnn)
 def init_weights(m):
     if type(m) == nn.Linear:
         # torch.nn.init.xavier_uniform(m.weight)
-        nn.init.uniform_(m.weight)
-        # if m.bias:
-        #     # m.weight.data.fill_(0.01)
-        #     m.bias.data.fill_(0.01)
+        nn.init.uniform_(m.weight, 0, 0.1)
+        nn.init.uniform_(m.bias, 0, 0.1)
+
+    # elif type(m) == nn.RNNCellBase:
+    #     nn.init.uniform_(m.weight_ih, 0, 0.1)
+    #     nn.init.uniform_(m.weight_hh, 0, 0.1)
+    #     nn.init.uniform_(m.bias_ih, 0, 0.1)
+    #     nn.init.uniform_(m.bias_hh, 0, 0.1)
+    # nn.init.uniform_(m.weight, 0, 0.1)
+    # if m.bias:
+    #     # m.weight.data.fill_(0.01)
+    #     m.bias.data.fill_(0.01)
 
 
 mu_rnn.apply(init_weights)
@@ -123,11 +94,11 @@ mu_optimizer = torch.optim.Adam(mu_rnn.parameters(), lr=LR)  # optimize all cnn 
 # data_loader = CreateMvMnistHiddenSeqLoader("/data1/home/guangjie/Data/MNIST/mv_mnist_z_vae_dcgan_round.hdf5",
 #                                            batch_size=BATCH_SIZE,
 #                                            num_workers=4)
-data_loader = CreateVim2HiddenLoader("/data1/home/guangjie/Data/vim-2-gallant/features/vae_gan_z_512.hdf5",
-                                     shuffle=True)  # todo 不打乱会 loss 会规律下降
+data_loader = CreateVim2HiddenLoader("/data1/home/guangjie/Data/vim-2-gallant/features/vae_gan_st_z_512.hdf5",
+                                     shuffle=True, num_workers=0)  # todo 不打乱会 loss 会规律下降
 
 test_loader = CreateVim2HiddenLoader("/data1/home/guangjie/Data/vim-2-gallant/features/vae_gan_sv_z_512.hdf5",
-                                     shuffle=True)
+                                     shuffle=True, num_workers=0)
 
 
 def KLD_loss(input, target):
@@ -234,6 +205,7 @@ for epoch in range(EPOCH):
             # save_image(comparison.cpu(),
             #            'lstm_results/reconstruction_' + str(epoch) + "_" + str(step) + '.png', nrow=n)
     with torch.no_grad():
+        loss_list = []
         for step, data in enumerate(test_loader):
             data = data.to(device)
             batch_mu = data[:, 0, :, :]  # shape = (batch_size, seq_len, z_size)
@@ -243,7 +215,7 @@ for epoch in range(EPOCH):
             kld_loss = KLDLossSeq(output, batch_logvar)  # cross entropy loss output[:, :, MU_SIZE:]
             mse_loss = MSELossSeq(output, batch_mu)  # BCE_loss(output, data)
             loss = mse_loss + kld_loss
-
+            loss_list.append(loss)
             n = min(data.size(0), 8)
             origin_z = model.sampler([batch_mu[:n, 0, :], batch_logvar[:n, 0, :]])
             origin = model.decoder(origin_z.view(n, origin_z.shape[-1], 1, 1))
@@ -254,9 +226,13 @@ for epoch in range(EPOCH):
             grid = torch.cat((origin, rec))
             vis.images(grid.cpu() * 0.5 + 0.5, nrow=n, win=test_origin_rec_win,
                        opts={"title": "test origin rec images"})
-            vis.line(Y=loss.view(1) / len(data), X=test_global_step, win=test_lstm_loss_win, update="append",
-                     opts={"title": "test lstm_loss_win"})
-            test_global_step += 1
+        vis.line(Y=sum(loss_list).view(1) / len(loss_list), X=test_global_step, win=test_lstm_loss_win, update="append",
+                 opts={"title": "test RNN_loss_win"})
+        test_global_step += 1
+    if (epoch + 1) % 30 == 0:
+        for g in mu_optimizer.param_groups:
+            LR /= 10
+            g['lr'] = LR
 
 torch.save(mu_rnn.state_dict(),
            'lstm_outf/lstm_autoencoder_mu_' + str(HIDDEN_SIZE) + '_' + str(int(time.time())) + '.pth')

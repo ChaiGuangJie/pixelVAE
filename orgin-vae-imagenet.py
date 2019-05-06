@@ -9,9 +9,10 @@ import torchvision
 from torchvision.transforms import ToTensor, Compose
 from torchvision.utils import save_image
 import os, time
-from myDataset import CreateDataLoader
+from myDataset import CreateDataLoader, MovingMNISTDataset
+import torchvision.transforms as transforms
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 parser = argparse.ArgumentParser(description='VAE MNIST Example')
 parser.add_argument('--batch-size', type=int, default=128, metavar='N',
@@ -46,23 +47,34 @@ test_loader = torch.utils.data.DataLoader(
     datasets.MNIST('data', train=False, transform=transforms.ToTensor()),
     batch_size=args.batch_size, shuffle=True, **kwargs)
 '''
-train_path = "/data1/home/guangjie/Data/imagenet64/train_64x64.hdf5"
-test_path = "/data1/home/guangjie/Data/imagenet64/valid_64x64.hdf5"
+# train_path = "/data1/home/guangjie/Data/imagenet64/train_64x64.hdf5"
+# test_path = "/data1/home/guangjie/Data/imagenet64/valid_64x64.hdf5"
+#
+# train_loader, test_loader = CreateDataLoader(train_path, test_path)
+transform = transforms.Compose([
+    transforms.ToTensor(),
+    # transforms.Normalize((0.5,), (0.5,))
+])
+dataset = MovingMNISTDataset("/data1/home/guangjie/Data/MNIST/mnist_train_seq.npy", transform)
+test_dataset = MovingMNISTDataset("/data1/home/guangjie/Data/MNIST/mnist_test_seq.npy", transform)
 
-train_loader, test_loader = CreateDataLoader(train_path, test_path)
+train_loader = torch.utils.data.DataLoader(dataset, batch_size=64,
+                                           shuffle=True, num_workers=4)
+test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=64,
+                                          shuffle=True, num_workers=4)
 
 
 class VAE(nn.Module):
     def __init__(self):
         super(VAE, self).__init__()
 
-        self.fc1 = nn.Linear(4096, 4096)
-        self.fc2 = nn.Linear(4096, 2048)
-        self.fc31 = nn.Linear(2048, 1024)
-        self.fc32 = nn.Linear(2048, 1024)
-        self.fc4 = nn.Linear(1024, 2048)
-        self.fc5 = nn.Linear(2048, 4096)
-        self.fc6 = nn.Linear(4096, 4096)
+        self.fc1 = nn.Linear(4096, 512)
+        self.fc2 = nn.Linear(512, 128)
+        self.fc31 = nn.Linear(128, 64)
+        self.fc32 = nn.Linear(128, 64)
+        self.fc4 = nn.Linear(64, 128)
+        self.fc5 = nn.Linear(128, 512)
+        self.fc6 = nn.Linear(512, 4096)
 
     def encode(self, x):
         h1 = F.relu(self.fc1(x))
@@ -85,21 +97,30 @@ class VAE(nn.Module):
         return self.decode(z), mu, logvar
 
 
+def init_weights(m):
+    if type(m) == nn.Linear:
+        # torch.nn.init.xavier_uniform(m.weight)
+        nn.init.uniform_(m.weight, -0.01, 0.01)
+        nn.init.uniform_(m.bias, -0.01, 0.01)
+
+
 model = VAE().to(device)
+model.apply(init_weights)
 optimizer = optim.Adam(model.parameters(), lr=1e-3)
+MSECriterion = nn.MSELoss(reduction='sum')
 
 
 # Reconstruction + KL divergence losses summed over all elements and batch
 def loss_function(recon_x, x, mu, logvar):
-    BCE = F.binary_cross_entropy(recon_x, x.view(-1, 4096), reduction='sum')
-
+    # BCE = F.binary_cross_entropy(recon_x, x.view(-1, 4096), reduction='sum')
+    MSE = MSECriterion(recon_x, x.view(-1, 4096))
     # see Appendix B from VAE paper:
     # Kingma and Welling. Auto-Encoding Variational Bayes. ICLR, 2014
     # https://arxiv.org/abs/1312.6114
     # 0.5 * sum(1 + log(sigma^2) - mu^2 - sigma^2)
     KLD = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
 
-    return BCE + KLD
+    return KLD + MSE
 
 
 def train(epoch):
@@ -118,6 +139,13 @@ def train(epoch):
                 epoch, batch_idx * len(data), len(train_loader.dataset),
                        100. * batch_idx / len(train_loader),
                        loss.item() / len(data)))
+        if batch_idx == 2812:
+            n = min(data.size(0), 8)
+            # recon_batch = recon_batch.mul_(172.5).clamp_(0, 255)
+            comparison = torch.cat([data[:n],
+                                    recon_batch.view(data.shape[0], 1, 64, 64)[:n]])
+            save_image(comparison.cpu(),
+                       'myResults/train_reconstruction_' + str(epoch) + '.png', nrow=n)
 
     print('====> Epoch: {} Average loss: {:.4f}'.format(
         epoch, train_loss / len(train_loader.dataset)))
@@ -133,8 +161,9 @@ def test(epoch):
             test_loss += loss_function(recon_batch, data, mu, logvar).item()
             if i == 0:
                 n = min(data.size(0), 8)
+                # recon_batch = recon_batch.mul_(172.5).clamp_(0, 255)
                 comparison = torch.cat([data[:n],
-                                        recon_batch.view(args.batch_size, 1, 64, 64)[:n]])
+                                        recon_batch.view(data.shape[0], 1, 64, 64)[:n]])
                 save_image(comparison.cpu(),
                            'myResults/reconstruction_' + str(epoch) + '.png', nrow=n)
 
@@ -143,13 +172,15 @@ def test(epoch):
 
 
 if __name__ == "__main__":
+
     for epoch in range(1, args.epochs + 1):
         train(epoch)
         test(epoch)
         with torch.no_grad():
-            sample = torch.randn(64, 1024).to(device)
+            sample = torch.randn(64, 64).to(device)
             sample = model.decode(sample).cpu()
+            # sample = sample.mul_(172.5).clamp_(0, 255)
             save_image(sample.view(64, 1, 64, 64),
                        'myResults/sample_' + str(epoch) + '.png')
-    torch.save(model.state_dict(), 'savedModels/orgin-vae-imagenet-' + str(int(time.time())) + '.pt')
+    torch.save(model.state_dict(), 'savedModels/orgin-vae-mvmnist-' + str(int(time.time())) + '.pt')
     print('model saved!')
